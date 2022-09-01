@@ -1,0 +1,207 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Teller Bank Challenge
+
+```elixir
+Mix.install([:req, :jason, :kino])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Your Solution
+
+```elixir
+username = Kino.Input.text("Username") |> Kino.render()
+password = Kino.Input.text("Password")
+```
+
+```elixir
+defmodule TellerBank do
+  defmodule OTPCode do
+    @moduledoc """
+    You can use this util module to generate your OTP
+    code dynamically.
+    """
+
+    @type username() :: String.t()
+
+    @spec generate(username) :: String.t()
+    def generate(username) do
+      username
+      |> String.to_charlist()
+      |> Enum.take(6)
+      |> Enum.map(&char_to_keypad_number/1)
+      |> List.to_string()
+      |> String.pad_leading(6, "0")
+    end
+
+    defp char_to_keypad_number(c) when c in ~c(a b c), do: '2'
+    defp char_to_keypad_number(c) when c in ~c(d e f), do: '3'
+    defp char_to_keypad_number(c) when c in ~c(g h i), do: '4'
+    defp char_to_keypad_number(c) when c in ~c(j k l), do: '5'
+    defp char_to_keypad_number(c) when c in ~c(m n o), do: '6'
+    defp char_to_keypad_number(c) when c in ~c(p q r s), do: '7'
+    defp char_to_keypad_number(c) when c in ~c(t u v), do: '8'
+    defp char_to_keypad_number(c) when c in ~c(w x y z), do: '9'
+    defp char_to_keypad_number(_), do: '0'
+  end
+
+  defmodule ChallengeResult do
+    @type t :: %__MODULE__{
+            account_number: String.t(),
+            balance_in_cents: integer
+          }
+    defstruct [:account_number, :balance_in_cents]
+  end
+
+  defmodule Client do
+    @type username() :: String.t()
+    @type password() :: String.t()
+
+    defp f_token(username, api_key, device_id, last_id, spec64) do
+      spec = spec64 |> Base.decode64!() |> Jason.decode!()
+      # hacky
+      f_key =
+        Enum.map(spec["values"], fn x ->
+          case x do
+            "username" ->
+              username
+
+            "api-key" ->
+              api_key
+
+            "device-id" ->
+              device_id
+
+            "last-request-id" ->
+              last_id
+          end
+        end)
+
+      f_string = Enum.join(f_key, ":")
+      token = :crypto.hash(:sha256, f_string) |> Base.encode64(padding: false)
+      token
+    end
+
+    @spec fetch(username, password) :: ChallengeResult.t()
+    def fetch(username, password) do
+      device_id = "FKDQRNY4QSXPJTNR"
+      api_key = "good-luck-at-the-teller-quiz!"
+
+      headers = %{
+        device_id: device_id,
+        api_key: api_key,
+        user_agent: "Teller Bank iOS 1.0",
+        content_type: "application/json",
+        accept: "application/json"
+      }
+
+      ## login
+
+      login_details = %{username: username, password: password}
+
+      login_response =
+        Req.post!("https://challenge.teller.engineering/login",
+          headers: headers,
+          json: login_details
+        )
+
+      ## mfa request
+      [sms | _voice] = login_response.body["mfa_devices"]
+
+      mfa_req_details = %{
+        device_id: sms["id"]
+      }
+
+      [request_id | _t] = Req.Response.get_header(login_response, "f-request-id")
+      [spec | _t] = Req.Response.get_header(login_response, "f-token-spec")
+
+      mfa_headers =
+        Map.merge(headers, %{
+          teller_is_hiring: "I know!",
+          request_token: Req.Response.get_header(login_response, "request-token"),
+          f_token: f_token(username, api_key, device_id, request_id, spec)
+        })
+
+      login_mfa_req_response =
+        Req.post!("https://challenge.teller.engineering/login/mfa/request",
+          headers: mfa_headers,
+          json: mfa_req_details
+        )
+
+      ## login mfa
+      mfa_details = %{code: OTPCode.generate(username)}
+      [request_id | _t] = Req.Response.get_header(login_mfa_req_response, "f-request-id")
+      [spec | _t] = Req.Response.get_header(login_mfa_req_response, "f-token-spec")
+
+      mfa_headers =
+        Map.merge(headers, %{
+          teller_is_hiring: "I know!",
+          request_token: Req.Response.get_header(login_mfa_req_response, "request-token"),
+          f_token: f_token(username, api_key, device_id, request_id, spec)
+        })
+
+      login_mfa_response =
+        Req.post!("https://challenge.teller.engineering/login/mfa",
+          headers: mfa_headers,
+          json: mfa_details
+        )
+
+      ## check details
+      [acc_details | _t] = login_mfa_response.body["accounts"]["checking"]
+      account_id = acc_details["id"]
+      [request_id | _t] = Req.Response.get_header(login_mfa_response, "f-request-id")
+      [spec | _t] = Req.Response.get_header(login_mfa_response, "f-token-spec")
+
+      mfa_headers =
+        Map.merge(headers, %{
+          teller_is_hiring: "I know!",
+          request_token: Req.Response.get_header(login_mfa_response, "request-token"),
+          f_token: f_token(username, api_key, device_id, request_id, spec)
+        })
+
+      details_response =
+        Req.get!("https://challenge.teller.engineering/accounts/#{account_id}/details",
+          headers: mfa_headers
+        )
+
+      ## ACCOUNT NUMBER!
+      number = details_response.body["number"]
+
+      # check balance
+      [request_id | _t] = Req.Response.get_header(details_response, "f-request-id")
+      [spec | _t] = Req.Response.get_header(details_response, "f-token-spec")
+
+      mfa_headers =
+        Map.merge(headers, %{
+          teller_is_hiring: "I know!",
+          request_token: Req.Response.get_header(details_response, "request-token"),
+          f_token: f_token(username, api_key, device_id, request_id, spec)
+        })
+
+      balance_response =
+        Req.get!("https://challenge.teller.engineering/accounts/#{account_id}/balances/",
+          headers: mfa_headers
+        )
+
+      balance = balance_response.body["available"]
+      %ChallengeResult{account_number: number, balance_in_cents: balance}
+    end
+  end
+end
+
+username = Kino.Input.read(username)
+password = Kino.Input.read(password)
+
+TellerBank.Client.fetch(username, password)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+%TellerBank.ChallengeResult{account_number: "162142458770", balance_in_cents: 5391746}
+```
