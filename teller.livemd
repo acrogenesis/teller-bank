@@ -87,6 +87,28 @@ defmodule TellerBank do
       token
     end
 
+    defp mfa_headers(response, username) do
+      device_id = "FKDQRNY4QSXPJTNR"
+      api_key = "good-luck-at-the-teller-quiz!"
+
+      headers = %{
+        device_id: device_id,
+        api_key: api_key,
+        user_agent: "Teller Bank iOS 1.0",
+        content_type: "application/json",
+        accept: "application/json"
+      }
+
+      [request_id | _t] = Req.Response.get_header(response, "f-request-id")
+      [spec | _t] = Req.Response.get_header(response, "f-token-spec")
+
+      Map.merge(headers, %{
+        teller_is_hiring: "I know!",
+        request_token: Req.Response.get_header(response, "request-token"),
+        f_token: f_token(username, api_key, device_id, request_id, spec)
+      })
+    end
+
     @spec fetch(username, password) :: ChallengeResult.t()
     def fetch(username, password) do
       device_id = "FKDQRNY4QSXPJTNR"
@@ -117,75 +139,37 @@ defmodule TellerBank do
         device_id: sms["id"]
       }
 
-      [request_id | _t] = Req.Response.get_header(login_response, "f-request-id")
-      [spec | _t] = Req.Response.get_header(login_response, "f-token-spec")
-
-      mfa_headers =
-        Map.merge(headers, %{
-          teller_is_hiring: "I know!",
-          request_token: Req.Response.get_header(login_response, "request-token"),
-          f_token: f_token(username, api_key, device_id, request_id, spec)
-        })
-
       login_mfa_req_response =
         Req.post!("https://challenge.teller.engineering/login/mfa/request",
-          headers: mfa_headers,
+          headers: mfa_headers(login_response, username),
           json: mfa_req_details
         )
 
       ## login mfa
       mfa_details = %{code: OTPCode.generate(username)}
-      [request_id | _t] = Req.Response.get_header(login_mfa_req_response, "f-request-id")
-      [spec | _t] = Req.Response.get_header(login_mfa_req_response, "f-token-spec")
-
-      mfa_headers =
-        Map.merge(headers, %{
-          teller_is_hiring: "I know!",
-          request_token: Req.Response.get_header(login_mfa_req_response, "request-token"),
-          f_token: f_token(username, api_key, device_id, request_id, spec)
-        })
 
       login_mfa_response =
         Req.post!("https://challenge.teller.engineering/login/mfa",
-          headers: mfa_headers,
+          headers: mfa_headers(login_mfa_req_response, username),
           json: mfa_details
         )
 
       ## check details
       [acc_details | _t] = login_mfa_response.body["accounts"]["checking"]
       account_id = acc_details["id"]
-      [request_id | _t] = Req.Response.get_header(login_mfa_response, "f-request-id")
-      [spec | _t] = Req.Response.get_header(login_mfa_response, "f-token-spec")
-
-      mfa_headers =
-        Map.merge(headers, %{
-          teller_is_hiring: "I know!",
-          request_token: Req.Response.get_header(login_mfa_response, "request-token"),
-          f_token: f_token(username, api_key, device_id, request_id, spec)
-        })
 
       details_response =
         Req.get!("https://challenge.teller.engineering/accounts/#{account_id}/details",
-          headers: mfa_headers
+          headers: mfa_headers(login_mfa_response, username)
         )
 
       ## ACCOUNT NUMBER!
       number = details_response.body["number"]
 
       # check balance
-      [request_id | _t] = Req.Response.get_header(details_response, "f-request-id")
-      [spec | _t] = Req.Response.get_header(details_response, "f-token-spec")
-
-      mfa_headers =
-        Map.merge(headers, %{
-          teller_is_hiring: "I know!",
-          request_token: Req.Response.get_header(details_response, "request-token"),
-          f_token: f_token(username, api_key, device_id, request_id, spec)
-        })
-
       balance_response =
         Req.get!("https://challenge.teller.engineering/accounts/#{account_id}/balances/",
-          headers: mfa_headers
+          headers: mfa_headers(details_response, username)
         )
 
       balance = balance_response.body["available"]
